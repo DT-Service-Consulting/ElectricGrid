@@ -1,0 +1,94 @@
+{
+    "equipmentId": {
+        "units": "-",
+        "description": "Unique identifier for each transformer"
+    },
+    "nominalLoad": {
+        "units": "MW?",
+        "description": "The maximum load that the equipment is designed to handle under normal operating conditions?"
+    },
+    "locationId": {
+        "units": "-",
+        "description": "Unique identifier for the location where the equipment is installed"
+    },
+    "coolingType": {
+        "units": "-",
+        "description": "The method used to cool the equipment (e.g., ONAF1, ONAN)"
+    },
+    "manufactureYear": {
+        "units": "year",
+        "description": "The year the equipment was manufactured?"
+    },
+    "commissioningDate": {
+        "units": "date",
+        "description": "The date when the equipment was put into service?"
+    },
+    "enclosure": {
+        "units": "-",
+        "description": "The type of enclosure isolating? the equipment (e.g., 4walls, 1wall)"
+    },
+    "heatRunTest_noLoadLosses": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_copperLosses": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_ambiantTemperature": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_deltaTopOil": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_deltaHotspot": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_x": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_y": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_h": {
+        "units": "?",
+        "description": "?"
+    },
+    "heatRunTest_gradient": {
+        "units": "?",
+        "description": "?"
+    },
+    "dateTime": {
+        "units": "dateTime",
+        "description": "The date and time when the measurement was taken"
+    },
+    "load": {
+        "units": "kW",
+        "description": "Energy load on the equipment at the time of measurement?"
+    },
+    "hotspotTemperature": {
+        "units": "\u00baC",
+        "description": "The temperature at the hottest point in the equipment?"
+    },
+    "temperature": {
+        "units": "\u00baC",
+        "description": "The ambient temperature at the time of measurement"
+    },
+    "windSpeed": {
+        "units": "m/s?",
+        "description": "The speed of wind at the location of the equipment?"
+    },
+    "relativeHumidityPercentage": {
+        "units": "%",
+        "description": "The relative humidity at the location of the equipment"
+    },
+    "city": {
+        "units": "-",
+        "description": "The city where the equipment is located"
+    }
+}
