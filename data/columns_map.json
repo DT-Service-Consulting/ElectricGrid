@@ -28,40 +28,40 @@
         "description": "The type of enclosure isolating? the equipment (e.g., 4walls, 1wall)"
     },
     "heatRunTest_noLoadLosses": {
-        "units": "?",
-        "description": "?"
+        "units": "kW",
+        "description": "Iron (core) losses of the transformer measured during the heat run test under no-load conditions."
     },
     "heatRunTest_copperLosses": {
-        "units": "?",
-        "description": "?"
+        "units": "kW",
+        "description": "Load (I²R) losses in the transformer windings during the heat run test at rated current."
     },
     "heatRunTest_ambiantTemperature": {
-        "units": "?",
-        "description": "?"
+        "units": "°C",
+        "description": "Ambient temperature around the transformer during the heat run test, used as the reference for temperature rise."
     },
     "heatRunTest_deltaTopOil": {
-        "units": "?",
-        "description": "?"
+        "units": "K",
+        "description": "Temperature rise of the top oil over ambient temperature at steady state during the heat run test."
     },
     "heatRunTest_deltaHotspot": {
-        "units": "?",
-        "description": "?"
+        "units": "K",
+        "description": "Temperature rise of the winding hot-spot over ambient temperature, derived from resistance measurements, during the heat run test."
     },
     "heatRunTest_x": {
-        "units": "?",
-        "description": "?"
+        "units": "-" ,
+        "description": "Exponent x in the transformer thermal model (typically oil exponent, ~0.8)."
     },
     "heatRunTest_y": {
-        "units": "?",
-        "description": "?"
+        "units": "-",
+        "description": "Exponent y in the transformer thermal model (typically winding exponent, ~1.3)."
     },
     "heatRunTest_h": {
-        "units": "?",
-        "description": "?"
+        "units": "-",
+        "description": "Dimensionless exponent used in the thermal model for transformer hot-spot or top-oil temperature calculation (typically between 1.0 and 1.5)."
     },
     "heatRunTest_gradient": {
-        "units": "?",
-        "description": "?"
+        "units": "K",
+        "description": "Gradient between winding hot-spot temperature and top oil temperature at rated load during the heat run test ?"
     },
     "dateTime": {
         "units": "dateTime",
