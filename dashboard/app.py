@@ -4,6 +4,7 @@ from itertools import cycle
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
@@ -11,8 +12,12 @@ from plotly import colors as pc
 import json
 import os
 
+from fft_utils import compute_fft, load_fft_from_cache, save_fft_to_cache
+
+
 # Resolve paths relative to this file
 BASE_DIR = Path(__file__).parent.resolve()
+FFT_CACHE_DIR = (BASE_DIR / "fft_cache").resolve()
 DEFAULT_CSV_PATH = (BASE_DIR / ".." / "data" / "final_merged_data_with_cities.csv").resolve()
 DEFAULT_COLUMNS_MAP_PATH = (BASE_DIR / ".." / "data" / "columns_map.json").resolve()
 # === NEW === optionally a separate default for equipment CSV (can be the same)
@@ -55,7 +60,7 @@ def resolve_alldf(uploaded, default_path):
     return None
 
 # --- Sidebar: plot type switch (NEW) ---
-plot_type = st.sidebar.radio("Plot type", ["Time series", "Equipment plot"], horizontal=True)
+plot_type = st.sidebar.radio("Plot type", ["Time series", "Equipment plot", "FFT"], horizontal=True)
 
 # --- Common: columns_map ---
 columns_map_file = st.sidebar.file_uploader("Upload columns_map.json", type=["json"], key="columns_map_up")
@@ -250,7 +255,216 @@ if plot_type == "Time series":
         plot_by_units(alldf, equipment_id, columns, columns_map, start_date, end_date)
 
 # ----------------------------
-# EQUIPMENT PLOT MODE (NEW)
+# FFT PLOT MODE
+# ----------------------------
+
+elif plot_type == "FFT":
+    st.subheader("Frequency analysis (FFT)")
+
+    # Use the same time-series CSV loader as Time series tab
+    uploaded = st.sidebar.file_uploader(
+        "Upload CSV (must include 'equipmentId' and 'dateTime')",
+        type=["csv"], key="fft_csv_up"
+    )
+    alldf_fft = resolve_alldf(uploaded, DEFAULT_CSV_PATH)
+    if alldf_fft is None:
+        st.info("Upload a CSV to begin, or provide a valid DEFAULT_CSV_PATH.")
+        st.stop()
+
+    # Ensure datetime col
+    alldf_fft['dateTime'] = pd.to_datetime(alldf_fft['dateTime'], errors='coerce')
+    alldf_fft = alldf_fft.dropna(subset=['dateTime']).sort_values('dateTime')
+
+    # Identify numeric plottable columns (exclude units == '-')
+    numeric_cols = (
+        alldf_fft.select_dtypes(include=['number', 'float', 'int'])
+                .columns.drop(['equipmentId'], errors='ignore')
+                .tolist()
+    )
+    if columns_map:
+        fft_candidates = [c for c in numeric_cols if c in columns_map and columns_map[c].get('units') != '-']
+    else:
+        fft_candidates = numeric_cols
+
+    equip_ids = sorted(alldf_fft['equipmentId'].dropna().unique().tolist())
+
+    # Two panels (A and B) for comparison
+    st.markdown("Choose two series to compare (each panel: equipment + variable).")
+    colA, colB = st.columns(2, gap="large")
+
+    with colA:
+        st.markdown("**Panel A**")
+        eqA = st.selectbox("Equipment ID (A)", equip_ids, key="fft_eq_a")
+        varA = st.selectbox("Variable (A)", fft_candidates, key="fft_var_a")
+        forceA = st.checkbox("Recompute FFT (A)", value=False, key="fft_force_a")
+
+    with colB:
+        st.markdown("**Panel B**")
+        eqB = st.selectbox("Equipment ID (B)", equip_ids, key="fft_eq_b")
+        varB = st.selectbox("Variable (B)", fft_candidates, key="fft_var_b")
+        forceB = st.checkbox("Recompute FFT (B)", value=False, key="fft_force_b")
+
+    # Frequency axis options
+    axis_unit = st.selectbox("Frequency unit", ["cycles/day", "Hz"], index=0)
+    y_scale_log = st.checkbox("Log scale (amplitude)", value=False)
+    max_freq = st.number_input(
+        f"Max frequency ({'cycles/day' if axis_unit=='cycles/day' else 'Hz'})",
+        min_value=0.0, value=0.0, help="0 = auto (Nyquist)"
+    )
+
+    plot_btn = st.button("Compute / Plot FFTs")
+
+    # Difference plot options
+    show_diff = st.checkbox("Show difference plot (A − B)", value=False)
+    diff_on = st.selectbox("Difference on", ["Amplitude", "Power"], index=0)
+
+    # def _source_tag(df: pd.DataFrame) -> str:
+    #     """A simple tag for cache partitioning; clear cache if data changes."""
+    #     # Try to derive from file path, otherwise a stable shape-based tag
+    #     try:
+    #         # If you have a known path, use it; else fall back to size hash
+    #         return "default_source"
+    #     except Exception:
+    #         h = hashlib.sha1(str((len(df), tuple(df.columns))).encode("utf-8")).hexdigest()[:8]
+    #         return f"mem_{h}"
+
+    def _get_fft_cached(df_all: pd.DataFrame, eq, var, force=False):
+        src = "default_source"  # keep simple; clear folder if your CSV changes
+        cached = None if force else load_fft_from_cache(FFT_CACHE_DIR, src, eq, var)
+        if cached is not None:
+            return cached, True
+
+        # Build per-equipment full series (no time window)
+        sub = df_all.loc[df_all['equipmentId'] == eq, ['dateTime', var]].dropna()
+        if sub.empty:
+            st.warning(f"No data for equipmentId={eq}, variable={var}.")
+            return None, False
+
+        try:
+            fft_df = compute_fft(sub, time_col='dateTime', value_col=var,
+                                 resample_seconds=None, detrend=True, window="hann")
+        except Exception as e:
+            st.error(f"FFT failed for {eq}-{var}: {e}")
+            return None, False
+
+        save_fft_to_cache(FFT_CACHE_DIR, src, eq, var, fft_df)
+        return fft_df, False
+
+    def _plot_fft(fft_df: pd.DataFrame, title: str):
+        if axis_unit == "cycles/day":
+            x = fft_df['frequency_per_day']
+            x_title = "Frequency (cycles/day)"
+        else:
+            x = fft_df['frequency_hz']
+            x_title = "Frequency (Hz)"
+
+        y = fft_df['amplitude']
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x, y=y, mode='lines', name='Amplitude'))
+        fig.update_layout(
+            template="plotly_white",
+            title=title,
+            xaxis_title=x_title,
+            yaxis_title="Amplitude",
+            height=450,
+            margin=dict(l=40, r=40, t=60, b=40)
+        )
+        if y_scale_log:
+            fig.update_yaxes(type="log")
+        # Max frequency
+        if max_freq and max_freq > 0:
+            fig.update_xaxes(range=[0, max_freq])
+        st.plotly_chart(fig, use_container_width=True)
+
+    def _align_and_diff(fft_a: pd.DataFrame, fft_b: pd.DataFrame, use_hz: bool, diff_kind: str):
+        """
+        Interpolate both spectra onto a common frequency axis over the overlapping range,
+        then return (x_grid, y_diff) where y_diff = A - B for chosen metric.
+        diff_kind: "Amplitude" or "Power"
+        """
+        xa = fft_a['frequency_hz'].to_numpy() if use_hz else fft_a['frequency_per_day'].to_numpy()
+        xb = fft_b['frequency_hz'].to_numpy() if use_hz else fft_b['frequency_per_day'].to_numpy()
+
+        if diff_kind == "Power":
+            ya = fft_a['power'].to_numpy()
+            yb = fft_b['power'].to_numpy()
+        else:
+            ya = fft_a['amplitude'].to_numpy()
+            yb = fft_b['amplitude'].to_numpy()
+
+        # Overlap range
+        left = max(np.nanmin(xa), np.nanmin(xb))
+        right = min(np.nanmax(xa), np.nanmax(xb))
+        if not np.isfinite(left) or not np.isfinite(right) or right <= left:
+            return None, None, "No overlapping frequency range to compare."
+
+        # Choose grid size ~ smaller of the two (keeps structure but avoids upsampling too much)
+        n = int(min(len(xa), len(xb)))
+        if n < 8:
+            return None, None, "Too few common points to compute a meaningful difference."
+
+        x_grid = np.linspace(left, right, n)
+        # Ensure strictly increasing for interp
+        sort_a = np.argsort(xa)
+        sort_b = np.argsort(xb)
+        yai = np.interp(x_grid, xa[sort_a], ya[sort_a])
+        ybi = np.interp(x_grid, xb[sort_b], yb[sort_b])
+
+        return x_grid, (yai - ybi), None
+
+    if plot_btn:
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            fftA, from_cacheA = _get_fft_cached(alldf_fft, eqA, varA, force=forceA)
+            if fftA is not None:
+                unitA = (columns_map.get(varA) or {}).get('units', '') if columns_map else ''
+                titleA = f"A — FFT: {eqA} · {varA} [{unitA}] " + ("(cached)" if from_cacheA else "(computed)")
+                _plot_fft(fftA, titleA)
+        with c2:
+            fftB, from_cacheB = _get_fft_cached(alldf_fft, eqB, varB, force=forceB)
+            if fftB is not None:
+                unitB = (columns_map.get(varB) or {}).get('units', '') if columns_map else ''
+                titleB = f"B — FFT: {eqB} · {varB} [{unitB}] " + ("(cached)" if from_cacheB else "(computed)")
+                _plot_fft(fftB, titleB)
+
+        if show_diff and (fftA is not None) and (fftB is not None):
+            use_hz = (axis_unit == "Hz")
+            xg, yd, err = _align_and_diff(fftA, fftB, use_hz=use_hz, diff_kind=diff_on)
+            if err:
+                st.warning(err)
+            else:
+                x_title = "Frequency (Hz)" if use_hz else "Frequency (cycles/day)"
+                y_title = f"Δ{diff_on} (A − B)"
+                figd = go.Figure()
+                figd.add_trace(go.Scatter(x=xg, y=yd, mode='lines', name=f"Δ{diff_on}"))
+                figd.update_layout(
+                    template="plotly_white",
+                    title=f"Difference: Panel A − Panel B ({diff_on})",
+                    xaxis_title=x_title,
+                    yaxis_title=y_title,
+                    height=450,
+                    margin=dict(l=40, r=40, t=60, b=40)
+                )
+                if y_scale_log and diff_on == "Power":
+                    # Log of signed differences is undefined; keep linear for signed data.
+                    st.info("Log scale disabled on difference of Power (can be negative).")
+                elif y_scale_log and diff_on == "Amplitude":
+                    # Amplitude difference can be negative too; log would be invalid.
+                    st.info("Log scale disabled on signed differences.")
+                st.plotly_chart(figd, use_container_width=True)
+
+    # Optional: quick table preview for either selection
+    if st.checkbox("Show FFT table (A)"):
+        fftA, _ = _get_fft_cached(alldf_fft, eqA, varA, force=False)
+        if fftA is not None:
+            st.dataframe(fftA.head(500))
+    if st.checkbox("Show FFT table (B)"):
+        fftB, _ = _get_fft_cached(alldf_fft, eqB, varB, force=False)
+        if fftB is not None:
+            st.dataframe(fftB.head(500))
+
+# ----------------------------
+# EQUIPMENT PLOT MODE
 # ----------------------------
 else:
     st.subheader("Equipment scatter plot")
