@@ -4,7 +4,7 @@
         "description": "Unique identifier for each transformer"
     },
     "nominalLoad": {
-        "units": "MW?",
+        "units": "MW?MVA?",
         "description": "The maximum load that the equipment is designed to handle under normal operating conditions?"
     },
     "locationId": {
@@ -68,7 +68,7 @@
         "description": "The date and time when the measurement was taken"
     },
     "load": {
-        "units": "kW",
+        "units": "kW?",
         "description": "Energy load on the equipment at the time of measurement?"
     },
     "hotspotTemperature": {
@@ -90,5 +90,9 @@
     "city": {
         "units": "-",
         "description": "The city where the equipment is located"
+    },
+    "wb_pred": {
+        "units": "\u00baC",
+        "description": "Predicted temperature using the white-box model"
     }
 }

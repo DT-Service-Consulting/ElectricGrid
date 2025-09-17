@@ -10,15 +10,19 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 from plotly import colors as pc
 import json
-import os
 
-from fft_utils import compute_fft, load_fft_from_cache, save_fft_to_cache
+import sys, os
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from utils.fft_utils import compute_fft, load_fft_from_cache, save_fft_to_cache
 
 
 # Resolve paths relative to this file
 BASE_DIR = Path(__file__).parent.resolve()
 FFT_CACHE_DIR = (BASE_DIR / "fft_cache").resolve()
-DEFAULT_CSV_PATH = (BASE_DIR / ".." / "data" / "final_merged_data_with_cities.csv").resolve()
+DEFAULT_CSV_PATH = (BASE_DIR / ".." / "data" / "final_merged_data_with_wb_pred.csv").resolve()
 DEFAULT_COLUMNS_MAP_PATH = (BASE_DIR / ".." / "data" / "columns_map.json").resolve()
 # === NEW === optionally a separate default for equipment CSV (can be the same)
 DEFAULT_EQUIPMENT_CSV_PATH = DEFAULT_CSV_PATH
