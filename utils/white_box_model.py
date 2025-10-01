@@ -38,7 +38,7 @@ def load_base_params_by_eid(wb_model):
 
     base_params_by_eid = {}
     for _, r in tfo_parameters.iterrows():
-        eid = r['equipmentId']
+        eid = int(r['equipmentId'])
         d = {}
         for k in wb_model.all_param_keys:
             if k in r and pd.notna(r[k]):
@@ -165,9 +165,8 @@ def eval_wb(df, y_true='hotspotTemperature', y_pred='wb_pred', load_col='load', 
         print_metrics_cols(metrics_dict)
     return metrics_dict
 
-def get_preds_and_metrics(wb_model, d, params_hat, base_params=None, load_col='load', nominal_load_col='nominalLoad'):
-    merged = {**(base_params or {}), **params_hat}
-    pred = wb_model.predict(d, merged)
+def get_preds_and_metrics(wb_model, d, params, load_col='load', nominal_load_col='nominalLoad'):
+    pred = wb_model.predict(d, params)
     tgt  = d['hotspotTemperature'].to_numpy(dtype=float)
     metrics_dict = get_metrics(d, tgt, pred, load_col=load_col, nominal_load_col=nominal_load_col)
     return metrics_dict, pred
@@ -218,21 +217,31 @@ def fit_transformer(wb_model,
                     init_overrides=None,
                     bounds_overrides=None,
                     priors=None,
-                    prior_weight=0.0):
+                    prior_weight=0.0,
+                    update_model=True):
 
     needed = ['temperature','hotspotTemperature','load','nominalLoad',
             'heatRunTest_copperLosses','heatRunTest_noLoadLosses']
     d = df_equipment[needed].dropna().copy()
     if d.empty:
         raise ValueError("No valid rows after dropna.")
+    eid = int(df_equipment['equipmentId'].iloc[0])
 
     x0, lb, ub = build_x0_bounds(wb_model, selected_keys, base_params, init_overrides, bounds_overrides)
     sol = least_squares(residuals_vec, x0,
                         args=(d, wb_model, selected_keys, base_params, priors, prior_weight),
                         bounds=(lb, ub), loss='soft_l1', f_scale=5.0, max_nfev=500)
-
+    
     params_hat = {k: float(v) for k, v in zip(selected_keys, sol.x)}
-    metrics, pred = get_preds_and_metrics(wb_model, d, params_hat)
+    all_params = wb_model.materialize_params_for_eid(eid, params_hat)
+    if update_model:
+        if not hasattr(wb_model, 'p_hat') or wb_model.p_hat is None:
+            wb_model.p_hat = {}
+        # copy to avoid aliasing issues
+        wb_model.p_hat = wb_model.p_hat.copy()
+        wb_model.p_hat[eid] = all_params
+
+    metrics, pred = get_preds_and_metrics(wb_model, d, all_params)
     return params_hat, metrics, pred
 
 def materialize_params(wb_model, p_hat, base_params=None, all_param_keys=None):
@@ -262,7 +271,7 @@ def fit_all_transformers(wb_model, df, id_col='equipmentId',
                         priors=None, prior_weight=0.0,
                         og_comparison=False,
                         savefile=None, print_metrics=False,
-                        update_model_base=True):
+                        update_model=True):
 
     if selected_keys is None:
         selected_keys = ['s','pf','heatRunTest_deltaTopOil','heatRunTest_deltaHotspot',
@@ -274,6 +283,7 @@ def fit_all_transformers(wb_model, df, id_col='equipmentId',
     results, preds = [], []
 
     for eid, g in df.groupby(id_col):
+        eid = int(eid)
         try:
             base_params = (base_params_by_eid or {}).get(eid, {})
             init_over   = (init_overrides_by_eid or {}).get(eid, None)
@@ -286,18 +296,14 @@ def fit_all_transformers(wb_model, df, id_col='equipmentId',
                 base_params=base_params,
                 init_overrides=init_over,
                 bounds_overrides=bounds_overrides,
-                priors=priors, prior_weight=prior_weight
+                priors=priors, prior_weight=prior_weight,
+                update_model=update_model
             )
+
+            print(metrics_fit)
 
             params_out_fit = materialize_params(wb_model, p_hat, base_params)
             year_fit = 2024
-
-            if update_model_base:
-                if not hasattr(wb_model, 'base_params') or wb_model.base_params is None:
-                    wb_model.base_params = {}
-                # copy to avoid aliasing issues
-                wb_model.base_params = wb_model.base_params.copy()
-                wb_model.base_params[eid] = params_out_fit
 
             # Collect preds (long, with source)
             tmp_fit = g[['dateTime', id_col, 'hotspotTemperature']].copy()
@@ -816,6 +822,7 @@ class BaseWBModel:
         # Compose registry
         self.params_registry = (params_registry or self.DEFAULT_REGISTRY).copy()
         self.all_param_keys = list(self.params_registry.keys())
+        self.p_hat = {}  # fitted params go here
 
         # Load base parameters per equipment
         self.base_params = base_params if base_params is not None else load_base_params_by_eid(self)
@@ -877,10 +884,16 @@ class BaseWBModel:
         ambient = d['temperature'].to_numpy(dtype=float)
         bias = self._bias_eval_numpy(K, bias_consts, ambient)
         return ambient + top_oil_rise + hs_rise + bias
-    
-    def add_preds_to_df(self, df, column_name = 'wb_preds'):
+
+    def add_preds_to_df(self, df, column_name = 'wb_pred'):
         records = []
         for eid, g in df.groupby('equipmentId'):
+            # g.dropna(subset=['temperature', 'load'], inplace=True)
+            needed = ['temperature', 'hotspotTemperature', 'load', 'heatRunTest_copperLosses', 'heatRunTest_noLoadLosses', 'nominalLoad']
+            g = g[needed].dropna().copy()
+            if g.empty:
+                print(f"Warning: No valid data for equipmentId '{eid}'. Skipping.")
+                continue
             params = self.materialize_params_for_eid(eid)
             preds = self.predict(g, params)
             rec = g.copy()
@@ -888,7 +901,7 @@ class BaseWBModel:
             records.append(rec)
         return pd.concat(records, ignore_index=True)
     
-    def eval_model(self, df, column_name = 'wb_preds', print_results=True):
+    def eval_model(self, df, column_name = 'wb_pred', print_results=True):
         """
         Evaluate model on a DataFrame with 'equipmentId', 'temperature', 'load', and optional 'heatRunTest_*' and 'nominalLoad'.
         Uses base_params for each equipmentId.
@@ -905,7 +918,8 @@ class BaseWBModel:
         Compose full params for a given equipment:
            fitted (p_hat) > base_params[eid] > registry defaults
         """
-        p_hat = p_hat or {}
+        if p_hat is None:
+            p_hat = self.p_hat[equipment_id] if equipment_id in self.p_hat else {}
         base = (self.base_params or {}).get(equipment_id, {})
         out = {}
         for k in self.all_param_keys:
@@ -1055,14 +1069,13 @@ class WBModel_NoAmbientBias(BaseWBModel):
 class WBModel_BiasCorrection(BaseWBModel):
     """
     Adds linear bias with intercepts:
-        bias = bias_intercept_main + bias_slope_fit * K + bias_intercept_fit
+        bias = bias_intercept + bias_slope * K
     """
     def __init__(self, bias_correction = None, params_registry: dict | None = None, base_params: dict | None = None):
         reg = (params_registry or BaseWBModel.DEFAULT_REGISTRY).copy()
         reg.update({
-            'bias_intercept_main': {'default': 0.0, 'bounds': (-10.0, 10.0)},
-            'bias_slope_fit':      {'default': 0.0, 'bounds': (-10.0, 10.0)},
-            'bias_intercept_fit':  {'default': 0.0, 'bounds': (-10.0, 10.0)},
+            'bias_slope':      {'default': 0.0, 'bounds': (-10.0, 10.0)},
+            'bias_intercept':  {'default': 0.0, 'bounds': (-10.0, 10.0)},
         })
         self.k_bins_fit = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, np.inf]
         self.k_labels_fit = ['0-0.1','0.1-0.2','0.2-0.3','0.3-0.4','0.4-0.5','0.5-0.6','0.6-0.7','0.7-0.8','0.8-0.9','0.9-1','1-1.1','1.1-inf']
@@ -1074,55 +1087,55 @@ class WBModel_BiasCorrection(BaseWBModel):
 
     def _bias_constants_from_params(self, params: dict):
         return (
-            float(params.get('bias_intercept_main', 0.0)),
-            float(params.get('bias_slope_fit', 0.0)),
-            float(params.get('bias_intercept_fit', 0.0)),
+            float(params.get('bias_slope', 0.0)),
+            float(params.get('bias_intercept', 0.0)),
         )
 
     def _bias_eval_numpy(self, K: np.ndarray, b_consts, ambient_array: np.ndarray) -> np.ndarray:
-        b_main, m_fit, b_fit = b_consts
-        return -(b_main + m_fit * K + b_fit)
+        m_fit, b_fit = b_consts
+        return -(m_fit * K + b_fit)
 
     def _bias_eval_torch(self, K, b_consts, ambient_tensor):
         import torch
-        b_main, m_fit, b_fit = b_consts
-        return -(b_main + m_fit * K + b_fit)
-    
+        m_fit, b_fit = b_consts
+        return -(m_fit * K + b_fit)
+
     def fit_bias_correction(self, df, correction_type):
         self.bias_correction = {}
+        col_name = 'wb_pred'
+        df_base = self.add_preds_to_df(df, column_name=col_name)
+        eids = df_base['equipmentId'].unique()
         if correction_type not in {'global', 'per_equipment', 'k_per_equipment', 'k_global'}:
             raise ValueError("correction_type must be one of {'global', 'per_equipment', 'k_per_equipment', 'k_global'} for fitting.")
         elif correction_type == 'global':
             # Fit a single global bias correction (intercept only)
-            eids = df['equipmentId'].unique()
-            df_base = self.add_preds_to_df(df, column_name='wb_pred')
             all_results = eval_wb(df_base, y_pred='wb_pred')
             overall_bias = all_results['Bias']
             for eid in eids:
-                self.bias_correction[int(eid)] = {'bias_intercept_main': float(overall_bias), 'bias_slope_fit': 0, 'bias_intercept_fit': 0}
+                self.bias_correction[int(eid)] = {'bias_slope': 0, 'bias_intercept': float(overall_bias)}
             print(f"Fitted global bias correction: intercept_main={overall_bias:.3f}")
         else:
-            main_biasses = self._get_bias_by_transformer(df, print_results=False)
-            main_bias_col_name = 'bias_main_pred'
-            alldf_bias = self._add_bias_to_df(df, main_biasses, id_col='equipmentId', column_name=main_bias_col_name)
             if correction_type == 'per_equipment':
+                main_biasses = self._get_bias_by_transformer(df_base, print_results=False, column_name=col_name)
                 for eid, main_bias in main_biasses.items():
-                    self.bias_correction[eid] = {'bias_intercept_main': float(main_bias), 'bias_slope_fit': 0, 'bias_intercept_fit': 0}
+                    self.bias_correction[eid] = {'bias_slope': 0, 'bias_intercept': float(main_bias)}
                 print(f"Fitted per-equipment bias corrections (intercept only) for {len(main_biasses)} equipmentIds.")
             elif correction_type == 'k_global':
-                results = eval_wb(alldf_bias, y_pred=main_bias_col_name, k_bins_and_labels=[self.k_bins_fit, self.k_labels_fit])
+                main_biasses = self._get_bias_by_transformer(df_base, print_results=False, column_name=col_name)
+                bias_col = 'bias_predicted'
+                df_bias = self._add_bias_to_df(df_base, main_biasses, id_col='equipmentId', column_name=bias_col)
+                results = eval_wb(df_bias, y_pred=bias_col, k_bins_and_labels=[self.k_bins_fit, self.k_labels_fit])
                 fit = self._get_metric_fit(results, metric='Bias', plot_graphs=False)
                 slope = fit.c[0] if len(fit.c) > 1 else 0.0
                 intercept = fit.c[1] if len(fit.c) > 1 else fit.c[0]
                 for eid, main_bias in main_biasses.items():
-                    self.bias_correction[eid] = {'bias_intercept_main': float(main_bias), 'bias_slope_fit': float(slope), 'bias_intercept_fit': float(intercept)}
+                    self.bias_correction[eid] = {'bias_slope': float(slope), 'bias_intercept': float(intercept + main_bias)}
             elif correction_type == 'k_per_equipment':
-                bias_fits = self._get_bias_fits_by_transformer(alldf_bias, base_column=main_bias_col_name, metric='Bias', id_col='equipmentId')
+                bias_fits = self._get_bias_fits_by_transformer(df_base, base_column=col_name, metric='Bias', id_col='equipmentId')
                 for eid, fit_fn in bias_fits.items():
                     slope = fit_fn.c[0] if len(fit_fn.c) > 1 else 0.0
                     intercept = fit_fn.c[1] if len(fit_fn.c) > 1 else fit_fn.c[0]
-                    main_bias = main_biasses.get(eid, 0.0)
-                    self.bias_correction[eid] = {'bias_intercept_main': float(main_bias), 'bias_slope_fit': float(slope), 'bias_intercept_fit': float(intercept)}
+                    self.bias_correction[eid] = {'bias_slope': float(slope), 'bias_intercept': float(intercept)}
         for eid, bc in self.bias_correction.items():
             self.base_params[eid].update(bc)
 
@@ -1164,7 +1177,6 @@ class WBModel_BiasCorrection(BaseWBModel):
             plt.figure(figsize=(8,6))
             plt.plot(x_values, y_values, marker='o')
             plt.plot(x_values, fit_fn(x_values), linestyle='--')
-        print(fit_fn.c)
         return fit_fn
 
     def _get_bias_fits_by_transformer(self, df, metric='Bias', id_col='equipmentId', base_column='bias_predicted', print_results=False, plot_graphs=False):
