@@ -168,7 +168,7 @@ def eval_wb(df, y_true='hotspotTemperature', y_pred='wb_pred', load_col='load', 
 def get_preds_and_metrics(wb_model, d, params, load_col='load', nominal_load_col='nominalLoad'):
     pred = wb_model.predict(d, params)
     tgt  = d['hotspotTemperature'].to_numpy(dtype=float)
-    metrics_dict = get_metrics(d, tgt, pred, load_col=load_col, nominal_load_col=nominal_load_col)
+    metrics_dict = get_metrics(d, tgt, pred, load_col=load_col, nominal_load_col=nominal_load_col) # Theres something wrong here. R2 is sometimes negative
     return metrics_dict, pred
 
 def print_metrics_cols(results, metric_cols = None):
@@ -284,77 +284,76 @@ def fit_all_transformers(wb_model, df, id_col='equipmentId',
 
     for eid, g in df.groupby(id_col):
         eid = int(eid)
-        try:
-            base_params = (base_params_by_eid or {}).get(eid, {})
-            init_over   = (init_overrides_by_eid or {}).get(eid, None)
+        # try:
+        base_params = (base_params_by_eid or {}).get(eid, {})
+        init_over   = (init_overrides_by_eid or {}).get(eid, None)
 
-            # -------- FITTED RUN --------
-            p_hat, metrics_fit, pred_fit = fit_transformer(
-                wb_model,
-                g,
-                selected_keys,
-                base_params=base_params,
-                init_overrides=init_over,
-                bounds_overrides=bounds_overrides,
-                priors=priors, prior_weight=prior_weight,
-                update_model=update_model
-            )
+        # -------- FITTED RUN --------
+        p_hat, metrics_fit, pred_fit = fit_transformer(
+            wb_model,
+            g,
+            selected_keys,
+            base_params=base_params,
+            init_overrides=init_over,
+            bounds_overrides=bounds_overrides,
+            priors=priors, prior_weight=prior_weight,
+            update_model=update_model
+        )
 
-            print(metrics_fit)
 
-            params_out_fit = materialize_params(wb_model, p_hat, base_params)
-            year_fit = 2024
+        params_out_fit = materialize_params(wb_model, p_hat, base_params)
+        year_fit = 2024
 
-            # Collect preds (long, with source)
-            tmp_fit = g[['dateTime', id_col, 'hotspotTemperature']].copy()
-            tmp_fit['wb_pred'] = pred_fit
-            tmp_fit['source'] = 'fit'
-            preds.append(tmp_fit)
+        # Collect preds (long, with source)
+        tmp_fit = g[['dateTime', id_col, 'hotspotTemperature']].copy()
+        tmp_fit['wb_pred'] = pred_fit
+        tmp_fit['source'] = 'fit'
+        preds.append(tmp_fit)
 
-            # -------- OG (TFO) COMPARISON --------
-            params_out_og = {k: np.nan for k in wb_model.all_param_keys}
-            metrics_og = {k: np.nan for k in METRIC_COLUMNS}
-            year_og = np.nan
+        # -------- OG (TFO) COMPARISON --------
+        params_out_og = {k: np.nan for k in wb_model.all_param_keys}
+        metrics_og = {k: np.nan for k in METRIC_COLUMNS}
+        year_og = np.nan
 
-            if og_comparison:
-                # Take OG params for selected keys from base_params (no optimization)
-                og_params = {k: float(base_params[k]) for k in selected_keys if k in base_params}
-                metrics_og, pred_og = get_preds_and_metrics(wb_model, g, og_params, base_params=base_params)
-                params_out_og = materialize_params(wb_model, og_params, base_params)
-                # pick an OG year if present
-                if 'manufactureYear' in g.columns and g['manufactureYear'].notna().any():
-                    year_og = g['manufactureYear'].dropna().iloc[0]
+        if og_comparison:
+            # Take OG params for selected keys from base_params (no optimization)
+            og_params = {k: float(base_params[k]) for k in selected_keys if k in base_params}
+            metrics_og, pred_og = get_preds_and_metrics(wb_model, g, og_params, base_params=base_params)
+            params_out_og = materialize_params(wb_model, og_params, base_params)
+            # pick an OG year if present
+            if 'manufactureYear' in g.columns and g['manufactureYear'].notna().any():
+                year_og = g['manufactureYear'].dropna().iloc[0]
 
-                # preds for OG
-                tmp_og = g[['dateTime', id_col, 'hotspotTemperature']].copy()
-                tmp_og['wb_pred'] = pred_og
-                tmp_og['source'] = 'og'
-                preds.append(tmp_og)
+            # preds for OG
+            tmp_og = g[['dateTime', id_col, 'hotspotTemperature']].copy()
+            tmp_og['wb_pred'] = pred_og
+            tmp_og['source'] = 'og'
+            preds.append(tmp_og)
 
-            # -------- BUILD ONE WIDE ROW --------
-            wide_row = {
-                'equipmentId': eid,
-                'year_fit': year_fit,
-                'year_og': year_og,
-                'year_diff': (year_fit - year_og) if pd.notna(year_og) else np.nan,
-                'n': int(len(g)),
-            }
+        # -------- BUILD ONE WIDE ROW --------
+        wide_row = {
+            'equipmentId': eid,
+            'year_fit': year_fit,
+            'year_og': year_og,
+            'year_diff': (year_fit - year_og) if pd.notna(year_og) else np.nan,
+            'n': int(len(g)),
+        }
 
-            # suffix all params + metrics
-            for k, v in params_out_fit.items():
-                wide_row[f'{k}_fit'] = v
-            for k, v in metrics_fit.items():
-                wide_row[f'{k}_fit'] = v
+        # suffix all params + metrics
+        for k, v in params_out_fit.items():
+            wide_row[f'{k}_fit'] = v
+        for k, v in metrics_fit.items():
+            wide_row[f'{k}_fit'] = v
 
-            for k, v in params_out_og.items():
-                wide_row[f'{k}_og'] = v
-            for k, v in metrics_og.items():
-                wide_row[f'{k}_og'] = v
+        for k, v in params_out_og.items():
+            wide_row[f'{k}_og'] = v
+        for k, v in metrics_og.items():
+            wide_row[f'{k}_og'] = v
 
-            results.append(wide_row)
+        results.append(wide_row)
 
-        except Exception as e:
-            results.append({'equipmentId': eid, 'error': str(e)})
+        # except Exception as e:
+        #     results.append({'equipmentId': eid, 'error': str(e)})
 
     res_df = pd.DataFrame(results)
     pred_df = pd.concat(preds, ignore_index=True) if preds else None
@@ -888,9 +887,9 @@ class BaseWBModel:
     def add_preds_to_df(self, df, column_name = 'wb_pred'):
         records = []
         for eid, g in df.groupby('equipmentId'):
-            # g.dropna(subset=['temperature', 'load'], inplace=True)
-            needed = ['temperature', 'hotspotTemperature', 'load', 'heatRunTest_copperLosses', 'heatRunTest_noLoadLosses', 'nominalLoad']
-            g = g[needed].dropna().copy()
+            g.dropna(subset=['temperature', 'load'], inplace=True)
+            # needed = ['temperature', 'hotspotTemperature', 'load', 'heatRunTest_copperLosses', 'heatRunTest_noLoadLosses', 'nominalLoad']
+            # g = g[needed].dropna().copy()
             if g.empty:
                 print(f"Warning: No valid data for equipmentId '{eid}'. Skipping.")
                 continue
@@ -898,6 +897,7 @@ class BaseWBModel:
             preds = self.predict(g, params)
             rec = g.copy()
             rec[column_name] = preds
+            rec['equipmentId'] = eid
             records.append(rec)
         return pd.concat(records, ignore_index=True)
     
@@ -1047,7 +1047,7 @@ class DefaultWBModel(BaseWBModel):
     def __init__(self, params_registry: dict | None = None, base_params: dict | None = None):
         reg = (params_registry or BaseWBModel.DEFAULT_REGISTRY).copy()
         reg.update({
-            'ambient_bias': {'default': 0.0, 'bounds': (-10.0, 10.0)}
+            'ambient_bias': {'default': 0.0, 'bounds': (-10.0, 20.0)}
         })
         super().__init__(reg, base_params)
 
