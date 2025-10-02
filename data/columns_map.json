@@ -95,15 +95,15 @@
         "units": "\u00baC",
         "description": "Predicted temperature using the white-box model"
     },
-    "wb_def_pred": {
+    "def_pred": {
         "units": "\u00baC",
         "description": "Predicted temperature using the default white-box model parameters"
     },
-    "wb_min_fit_pred": {
+    "min_fit_pred": {
         "units": "\u00baC",
         "description": "Predicted temperature using the fitted white-box model parameters"
     },
-    "wb_full_fit_pred": {
+    "full_fit_pred": {
         "units": "\u00baC",
         "description": "Predicted temperature using the fully fitted white-box model parameters"
     },
