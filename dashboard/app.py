@@ -316,11 +316,20 @@ elif plot_type == "FFT":
         min_value=0.0, value=0.0, help="0 = auto (Nyquist)"
     )
 
-    plot_btn = st.button("Compute / Plot FFTs")
-
     # Difference plot options
+
     show_diff = st.checkbox("Show difference plot (A − B)", value=False)
-    diff_on = st.selectbox("Difference on", ["Amplitude", "Power"], index=0)
+
+    if show_diff:
+        diff_method = st.selectbox(
+            "Difference method",
+            ["Magnitude/Power (interpolated)", "Complex (FFT of A − B)"],
+            index=1  # default to complex, as you prefer
+        )
+
+        diff_on = st.selectbox("Difference on", ["Amplitude", "Power"], index=0)
+
+    plot_btn = st.button("Compute / Plot FFTs")
 
     # def _source_tag(df: pd.DataFrame) -> str:
     #     """A simple tag for cache partitioning; clear cache if data changes."""
@@ -432,30 +441,64 @@ elif plot_type == "FFT":
                 _plot_fft(fftB, titleB)
 
         if show_diff and (fftA is not None) and (fftB is not None):
-            use_hz = (axis_unit == "Hz")
-            xg, yd, err = _align_and_diff(fftA, fftB, use_hz=use_hz, diff_kind=diff_on)
-            if err:
-                st.warning(err)
+            if diff_method == "Complex (FFT of A − B)":
+                # Build per-equipment full series for A and B (no window limits)
+                subA = alldf_fft.loc[alldf_fft['equipmentId'] == eqA, ['dateTime', varA]].dropna()
+                subB = alldf_fft.loc[alldf_fft['equipmentId'] == eqB, ['dateTime', varB]].dropna()
+
+                try:
+                    from utils.fft_utils import compute_fft_diff_complex
+                    fftD = compute_fft_diff_complex(
+                        subA.rename(columns={varA: 'value'}),
+                        subB.rename(columns={varB: 'value'}),
+                        time_col='dateTime',
+                        value_col='value',
+                        resample_seconds=None,
+                        detrend=True,
+                        window="hann",
+                        amplitude_norm="onesided"
+                    )
+                except Exception as e:
+                    st.error(f"Complex difference failed: {e}")
+                    fftD = None
+
+                if fftD is not None:
+                    if axis_unit == "Hz":
+                        x = fftD["frequency_hz"]; xlab = "Frequency (Hz)"
+                    else:
+                        x = fftD["frequency_per_day"]; xlab = "Frequency (cycles/day)"
+                    y = fftD["amplitude"]  # you could also plot real/imag/phase
+                    figd = go.Figure()
+                    figd.add_trace(go.Scatter(x=x, y=y, mode='lines', name="|FFT(A − B)|"))
+                    figd.update_layout(
+                        template="plotly_white",
+                        title="Difference (complex): | FFT(A − B) |",
+                        xaxis_title=xlab, yaxis_title="Amplitude",
+                        height=450, margin=dict(l=40, r=40, t=60, b=40)
+                    )
+                    if max_freq and max_freq > 0:
+                        figd.update_xaxes(range=[0, max_freq])
+                    st.plotly_chart(figd, use_container_width=True)
+
             else:
-                x_title = "Frequency (Hz)" if use_hz else "Frequency (cycles/day)"
-                y_title = f"Δ{diff_on} (A − B)"
-                figd = go.Figure()
-                figd.add_trace(go.Scatter(x=xg, y=yd, mode='lines', name=f"Δ{diff_on}"))
-                figd.update_layout(
-                    template="plotly_white",
-                    title=f"Difference: Panel A − Panel B ({diff_on})",
-                    xaxis_title=x_title,
-                    yaxis_title=y_title,
-                    height=450,
-                    margin=dict(l=40, r=40, t=60, b=40)
-                )
-                if y_scale_log and diff_on == "Power":
-                    # Log of signed differences is undefined; keep linear for signed data.
-                    st.info("Log scale disabled on difference of Power (can be negative).")
-                elif y_scale_log and diff_on == "Amplitude":
-                    # Amplitude difference can be negative too; log would be invalid.
-                    st.info("Log scale disabled on signed differences.")
-                st.plotly_chart(figd, use_container_width=True)
+                # Existing magnitude/power interpolation difference
+                use_hz = (axis_unit == "Hz")
+                xg, yd, err = _align_and_diff(fftA, fftB, use_hz=use_hz, diff_kind=diff_on)
+                if err:
+                    st.warning(err)
+                else:
+                    x_title = "Frequency (Hz)" if use_hz else "Frequency (cycles/day)"
+                    y_title = f"Δ{diff_on} (A − B)"
+                    figd = go.Figure()
+                    figd.add_trace(go.Scatter(x=xg, y=yd, mode='lines', name=f"Δ{diff_on}"))
+                    figd.update_layout(
+                        template="plotly_white",
+                        title=f"Difference: Panel A − Panel B ({diff_on})",
+                        xaxis_title=x_title, yaxis_title=y_title,
+                        height=450, margin=dict(l=40, r=40, t=60, b=40)
+                    )
+                    st.plotly_chart(figd, use_container_width=True)
+
 
     # Optional: quick table preview for either selection
     if st.checkbox("Show FFT table (A)"):

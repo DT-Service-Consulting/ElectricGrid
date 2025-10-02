@@ -40,6 +40,163 @@ def _regularize_series(df: pd.DataFrame, time_col: str, value_col: str,
     ser = ser.dropna()
     return ser.index, ser.values.astype(float), float(dt)
 
+
+def _prepare_uniform_series(df: pd.DataFrame,
+                            time_col: str,
+                            value_col: str,
+                            resample_seconds: Optional[float],
+                            detrend: bool,
+                            window: Optional[str]) -> Tuple[np.ndarray, float]:
+    """
+    Return uniformly-sampled, windowed series xw and dt (seconds).
+    """
+    idx, x, dt = _regularize_series(df, time_col, value_col, resample_seconds)
+    if x.size < 4:
+        raise ValueError("Too few samples for FFT.")
+
+    if detrend:
+        x = x - np.nanmean(x)
+
+    if window == "hann":
+        w = np.hanning(x.size)
+    elif window in (None, False):
+        w = np.ones(x.size, dtype=float)
+    else:
+        raise ValueError(f"Unsupported window: {window}")
+
+    xw = x * w
+    return xw, float(dt)
+
+def _fft_complex(xw: np.ndarray, dt: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Complex rFFT and frequency axis in Hz.
+    """
+    Y = np.fft.rfft(xw)                  # complex spectrum
+    f = np.fft.rfftfreq(xw.size, d=dt)   # Hz
+    return f, Y
+
+def _package_spectrum(f_hz: np.ndarray,
+                      Y: np.ndarray,
+                      dt: float,
+                      window_energy: Optional[float] = None,
+                      amplitude_norm: str = "onesided") -> pd.DataFrame:
+    """
+    Build a tidy DataFrame with complex spectrum + amplitude/power/phase.
+    """
+    n = Y.size if f_hz.size == Y.size else (2*(Y.size-1))
+    # Default window energy = N if not provided
+    if window_energy is None:
+        window_energy = float(n)
+
+    # amplitude scaling consistent with compute_fft()
+    if amplitude_norm == "onesided":
+        scale = 2.0 / window_energy
+        amp = np.abs(Y) * scale
+        if amp.size > 0:
+            amp[0] = amp[0] / 2.0
+            if (n % 2) == 0:
+                amp[-1] = amp[-1] / 2.0
+    else:
+        scale = 1.0 / window_energy
+        amp = np.abs(Y) * scale
+
+    out = pd.DataFrame({
+        "frequency_hz": f_hz,
+        "frequency_per_day": f_hz * 86400.0,
+        "real": Y.real,
+        "imag": Y.imag,
+        "amplitude": amp,
+        "power": amp**2,
+        "phase_rad": np.angle(Y)
+    })
+    out["n_samples"] = int(round(n))
+    out["dt_seconds"] = float(dt)
+    return out
+
+def compute_fft_complex(df: pd.DataFrame,
+                        time_col: str = "dateTime",
+                        value_col: str = "load",
+                        resample_seconds: Optional[float] = None,
+                        detrend: bool = True,
+                        window: Optional[str] = "hann",
+                        amplitude_norm: str = "onesided") -> pd.DataFrame:
+    """
+    Return the complex FFT spectrum of a single series, plus amplitude/power/phase.
+    """
+    # prepare windowed series and dt
+    idx, x, dt = _regularize_series(df, time_col, value_col, resample_seconds)
+    if x.size < 4:
+        raise ValueError("Too few samples for FFT.")
+    if detrend:
+        x = x - np.nanmean(x)
+    if window == "hann":
+        w = np.hanning(x.size)
+    elif window in (None, False):
+        w = np.ones(x.size, dtype=float)
+    else:
+        raise ValueError(f"Unsupported window: {window}")
+
+    xw = x * w
+    f_hz, Y = _fft_complex(xw, dt)
+    return _package_spectrum(f_hz, Y, dt, window_energy=float(np.sum(w)), amplitude_norm=amplitude_norm)
+
+def compute_fft_diff_complex(df_a: pd.DataFrame,
+                             df_b: pd.DataFrame,
+                             time_col: str = "dateTime",
+                             value_col: str = "load",
+                             resample_seconds: Optional[float] = None,
+                             detrend: bool = True,
+                             window: Optional[str] = "hann",
+                             amplitude_norm: str = "onesided") -> pd.DataFrame:
+    """
+    FFT of the time-domain difference (A - B), using identical resampling/windowing.
+    This is equivalent to subtracting complex FFTs after **identical** preprocessing.
+    """
+    # Build uniform, windowed series for A and B on **their own** grids
+    # Then align to a **common** grid: choose the smaller dt and the overlapping time span.
+    # We reuse _regularize_series twice, then resample both to the same rule.
+
+    # 1) Uniform series (unwindowed) so we can align lengths exactly
+    idx_a, xa, dt_a = _regularize_series(df_a, time_col, value_col, resample_seconds)
+    idx_b, xb, dt_b = _regularize_series(df_b, time_col, value_col, resample_seconds)
+
+    # 2) choose common dt (finer of the two) and overlap range
+    dt = float(min(dt_a, dt_b))
+    rule = f"{max(1, int(round(dt)))}S"
+    t0 = max(idx_a.min(), idx_b.min())
+    t1 = min(idx_a.max(), idx_b.max())
+    if not (pd.notna(t0) and pd.notna(t1) and t1 > t0):
+        raise ValueError("No overlapping time range between the two series.")
+
+    idx_common = pd.date_range(t0.floor("S"), t1.ceil("S"), freq=rule)
+
+    # 3) reindex/interpolate both onto the common grid
+    sa = pd.Series(xa, index=idx_a).reindex(idx_common).interpolate("time")
+    sb = pd.Series(xb, index=idx_b).reindex(idx_common).interpolate("time")
+
+    x = sa.values.astype(float)
+    y = sb.values.astype(float)
+    if detrend:
+        x = x - np.nanmean(x)
+        y = y - np.nanmean(y)
+
+    # 4) identical window
+    n = min(x.size, y.size)
+    x = x[:n]; y = y[:n]
+    if window == "hann":
+        w = np.hanning(n)
+    elif window in (None, False):
+        w = np.ones(n, dtype=float)
+    else:
+        raise ValueError(f"Unsupported window: {window}")
+
+    diffw = (x - y) * w
+
+    # 5) FFT of the difference
+    f_hz, Ydiff = _fft_complex(diffw, dt)
+    return _package_spectrum(f_hz, Ydiff, dt, window_energy=float(np.sum(w)), amplitude_norm=amplitude_norm)
+
+
 def compute_fft(df: pd.DataFrame,
                 time_col: str = "dateTime",
                 value_col: str = "load",
